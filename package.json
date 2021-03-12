@@ -8,7 +8,7 @@
     "start": "nuxt start",
     "generate": "nuxt generate",
     "lint:js": "eslint --ext .js,.vue --ignore-path .gitignore .",
-    "lint": "npm run lint:js   && npm run test-local",
+    "lint": "npm run lint:js ",
     "test": "jest"
   },
   "dependencies": {
@@ -22,7 +22,7 @@
   },
   "husky": {
     "hooks": {
-      "pre-commit": "npm run lint"
+      "pre-commit": "npm run lint && npm run test"
     }
   },
   "devDependencies": {
@@ -34,6 +34,7 @@
     "babel-jest": "^26.5.0",
     "eslint": "^7.10.0",
     "eslint-plugin-nuxt": "^1.0.0",
+    "husky": "^4.3.7",
     "jest": "^26.5.0",
     "nodemailer": "^6.5.0",
     "vue-jest": "^3.0.4"
