@@ -15,6 +15,8 @@ module.exports = {
   ],
   // add your custom rules here semi是分号
   rules: {
-    semi: ['error', 'never']
+    semi: ['error', 'never'],
+    'vue/singleline-html-element-content-newline': 'off',
+    'vue/multiline-html-element-content-newline': 'off'
   }
 }

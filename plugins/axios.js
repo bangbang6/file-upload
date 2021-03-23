@@ -2,7 +2,7 @@
 import Vue from 'vue'
 import axios from 'axios'
 import { MessageBox } from 'element-ui'
-
+// 自动加api
 const service = axios.create({
   baseURL: '/api'
 })
