@@ -256,7 +256,6 @@ export default {
       }))
       // 一次性全部发出 申请tcp会很慢
       await Promise.all(requestPromise).then((res) => {
-        console.log('切片', res)
       })
       await this.mergeChunks()
     },
