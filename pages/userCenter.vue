@@ -8,6 +8,24 @@
       文件上传
       <el-progress :text-inside="true" :stroke-width="20" :percentage="percentage" />
     </div>
+    <div class="cube-progress" :style="{width:cubeWidth+'px'}">
+      <div v-for="chunk in chunks" :key="chunk.name" class="cube">
+        <div
+          :style="{height:chunk.process+'%'}"
+          :class="{
+            'uploading':chunk.process>0 && chunk.process<100,
+            'success':chunk.process === 100,
+            'error':chunk.process<0
+          }"
+        >
+          <i
+            v-if="chunk.process<100 && chunk.process>0"
+            class="el-icon-loading"
+            style="color:white"
+          />
+        </div>
+      </div>
+    </div>
     <div class="progress">
       计算hash
       <el-progress :text-inside="true" :stroke-width="20" :percentage="process" />
@@ -16,21 +34,49 @@
       计算hash2
       <el-progress :text-inside="true" :stroke-width="20" :percentage="process2" />
     </div>
+    <div class="progress">
+      计算hash3
+      <el-progress :text-inside="true" :stroke-width="20" :percentage="process3" />
+    </div>
     <button @click="uploadFile">上传</button>
   </div>
 </template>
 
 <script>
 import sparkMD5 from 'spark-md5'
-const CHUNK_SIZE = 0.1 * 1024 * 1024 // 0.5M
+const CHUNK_SIZE = 0.5 * 1024 * 1024 // 0.5M 必须是整数
 export default {
   data () {
     return {
       file: null,
-      percentage: 0,
+
       process: 0,
       process2: 0,
-      hash: ''
+      process3: 0,
+      hash: '',
+      hash2: '',
+      hash3: '',
+      chunks: []
+    }
+  },
+  computed: {
+    cubeWidth () {
+      return Math.ceil(Math.sqrt(this.chunks.length)) * 100 // 每个方框16px
+    },
+    percentage () {
+      if (!this.file || !this.chunks.length) {
+        return 0
+      }
+
+      const loaded = this.chunks.map((item) => {
+        return item.process * item.chunk.size
+      }).reduce((acc, cur) => acc + cur, 0)
+
+      const fileSize = this.file.size
+
+      const per = Number(((loaded) / fileSize).toFixed(2))
+
+      return per
     }
   },
   async mounted () {
@@ -42,15 +88,17 @@ export default {
   },
   methods: {
     blobToString (blob) {
+      //! 需要异步执行函数都封装在promise里面，然后reslove拿结果  或者定义一个async 函数 里面await去等待结果
       return new Promise((resolve) => {
         const reader = new FileReader()
         reader.onload = function () {
-          console.log('reader.result', reader.result) // 读取到的字符串
-          // 读取好的string split开 然后转成asci码(10进制) 然后转成16进制 最后加0 去比对
-          const ret = reader.result.split('').map(v => v.charCodeAt()).map(v => v.toString(16).toUpperCase()).map(v => v.padStart(2, '0')).join(' ')
-          resolve(ret)
+          // arrayBuffer 可以以一般 Uint8Array 形式存储 Uint8Array 形式可以直接转成16进制
+          const sexNumber = Array.prototype.map.call(new Uint8Array(reader.result), x => ('00' + x.toString(16).toUpperCase()).slice(-2)).join(' ')
+
+          resolve(sexNumber)
         }
-        reader.readAsBinaryString(blob) // 把blob读取成string
+
+        reader.readAsArrayBuffer(blob) // 把blob读取成二进制string
       })
     },
     async isImage (file) {
@@ -60,14 +108,12 @@ export default {
       // 前面的6个16进制 '47 49 46 38 39 61' || '47 49 46 38 37 61' 转成字符串分别为gif89a,gif87a这六个字符
 
       const ret = await this.blobToString(file.slice(0, 6)) // file截取前六个字符串的blob blob必须通过fileReader才能读取
-      console.log('ret1', ret)
       const isGif = (ret === '47 49 46 38 39 61') || (ret === '47 49 46 38 37 61')
 
       return isGif
     },
     async isPng (file) {
       const ret = await this.blobToString(file.slice(0, 8)) // file截取前六个字符串的blob blob必须通过fileReader才能读取
-      console.log('ret2', ret)
       const isPng = (ret === '89 50 4E 47 0D 0A 1A 0A')
 
       return isPng
@@ -77,7 +123,7 @@ export default {
       const start = await this.blobToString(file.slice(0, 2))
       const end = await this.blobToString(file.slice(-2, len))
 
-      const isJpg = (start === 'FF 08') && (end === 'ff D9')
+      const isJpg = (start === 'FF 08') && (end === 'FF D9')
       return isJpg
     },
     bindEvents () {
@@ -121,7 +167,6 @@ export default {
         this.process = process
         if (hash) {
           this.hash = hash
-          console.log('this.hash', this.hash)
         }
       }
     },
@@ -149,12 +194,71 @@ export default {
         if (count === chunks.length) {
           this.process2 = 100.00
           this.hash2 = spark.end()
-          console.log('this.hash2', this.hash2)
         } else {
           window.requestIdleCallback(wookloop)
         }
       }
       window.requestIdleCallback(wookloop)
+    },
+    calcHashSample (file) {
+      // 布隆过滤器 hash一样可能是同一个文件 但是不一样一定不是同一个文件 这个数据结构方便用来查找
+      return new Promise((resolve) => {
+        const len = file.size
+        const offset = 0.1 * 1024 * 1024
+        const spark = new sparkMD5.ArrayBuffer()
+        let cur = offset
+        const sparkCalc = (blobs, cur1) => {
+          const reader = new FileReader()
+          reader.readAsArrayBuffer(blobs)
+          reader.onload = (e) => {
+            spark.append(e.target.result)
+            if (cur1 + offset >= len) {
+              resolve(spark.end())
+              this.process3 = 100
+            } else {
+              this.process3 = Number((100 * cur1 / len).toFixed(2))
+            }
+          }
+        }
+        sparkCalc(file.slice(0, offset), cur)
+
+        while (cur < len) {
+          if (cur + offset >= len) {
+            sparkCalc(file.slice(cur, len), cur)
+            break
+          } else {
+            const mid = cur + offset / 2
+            const end = cur + offset
+            sparkCalc(file.slice(cur, cur + 2), cur)
+            sparkCalc(file.slice(mid, mid + 2), cur)
+            sparkCalc(file.slice(end - 2, end), cur)
+          }
+          cur += offset
+        }
+      })
+    },
+    async mergeChunks () {
+      await this.$http.post('merge', { ext: this.file.name.split('.').pop(), size: CHUNK_SIZE, hash: this.hash }) // 给后缀名和区块的size
+    },
+    async uploadChunks (chunks) {
+      // 映射成promise
+      const requestPromise = chunks.map((chunk, index) => {
+        const form = new FormData()
+        form.append('hash', chunk.hash)
+        form.append('name', chunk.name)
+        form.append('chunk', chunk.chunk)
+        form.append('index', chunk.index)
+        return form
+      }).map((form, index) => this.$http.post('/uploadfile', form, {
+        onUploadProgress: (progress) => {
+          this.chunks[index].process = parseInt(((progress.loaded / progress.total) * 100).toFixed(2))
+        }
+      }))
+      // 一次性全部发出 申请tcp会很慢
+      await Promise.all(requestPromise).then((res) => {
+        console.log('切片', res)
+      })
+      await this.mergeChunks()
     },
     async uploadFile () {
       if (!this.isImage(this.file)) {
@@ -162,18 +266,33 @@ export default {
         return
       }
       const chunks = this.createFileChunk(this.file, CHUNK_SIZE)
-      this.calculateHashWorker(chunks)
-      /* this.calculateHashIdel(chunks) */
 
-      /*  const form = new FormData()
-      form.append('name', 'file')
-      form.append('file', this.file)
-      // axios自带的配置 钩子事件
-      await this.$http.post('/uploadfile', form, {
-        onUploadProgress: (progress) => {
-          this.percentage = Number(((progress.loaded / progress.total) * 100).toFixed(2))
+      /* this.calculateHashWorker(chunks) */
+      /* /* this.calculateHashIdel(chunks) */
+
+      this.hash = await this.calcHashSample(this.file) // 损失一部分精度去换取效率
+      // 这里的初始化才是响应式的 你没在这里写process 后面就不会根据process响应式 这里因为set函数里面会深层递归设置响应式
+      this.chunks = chunks.map((chunk, index) => {
+        return {
+          hash: this.hash,
+          name: this.hash + '-' + index,
+          index,
+          chunk: chunk.file,
+          process: 0
         }
-      }) */
+      })
+
+      await this.uploadChunks(this.chunks)
+
+      /*    const form = new FormData()
+  form.append('name', 'file')
+  form.append('file', this.file)
+  // axios自带的配置 钩子事件
+  await this.$http.post('/uploadfile', form, {
+    onUploadProgress: (progress) => {
+      this.percentage = Number(((progress.loaded / progress.total) * 100).toFixed(2))
+    }
+  }) */
     }
   }
 }
@@ -196,5 +315,32 @@ export default {
   width: 60%;
   margin-left: 20%;
   margin-top: 20px;
+}
+.cube-progress {
+  width: 364px;
+  height: 364px;
+  .cube {
+    float: left;
+    width: 40px;
+    height: 40px;
+    background: #eee;
+    margin-left: 20px;
+    border: 1px solid black;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    .uploading {
+      background: blue;
+      width: 100%;
+    }
+    .success {
+      background: green;
+      width: 100%;
+    }
+    .error {
+      background: red;
+      width: 100%;
+    }
+  }
 }
 </style>
