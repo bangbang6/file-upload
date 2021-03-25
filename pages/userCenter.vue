@@ -324,7 +324,6 @@ export default {
       /* /* this.calculateHashIdel(chunks) */
 
       this.hash = await this.calcHashSample(this.file) // 损失一部分精度去换取效率
-      console.log('this.hash', this.hash)
 
       // 计算完hash 用这个hash去问后台这个文件上传过吗
       const { data: { uploaded, uploadedList } } = await this.$http.post('/checkFile', { hash: this.hash, ext: this.file.name.split('.').pop() })

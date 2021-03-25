@@ -51,9 +51,6 @@ export default {
       this.start = Math.floor(scollTop / this.size)
       this.end = this.start + this.count
       this.startOffset = scollTop - (scollTop % this.size) // 取一个整数 *size
-      console.log('scollTop', scollTop)
-      console.log('start', this.start)
-      console.log('startOffset', this.startOffset)
     }
   }
 }
