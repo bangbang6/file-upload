@@ -187,6 +187,7 @@ export default {
         while (count < chunks.length && deadline.timeRemaining() > 1) {
           await appendSpark(chunks[count].file)
           count++
+
           if (count < chunks.length) {
             this.process2 = Number((100 * count / chunks.length).toFixed(2))
           }
@@ -203,63 +204,116 @@ export default {
     calcHashSample (file) {
       // 布隆过滤器 hash一样可能是同一个文件 但是不一样一定不是同一个文件 这个数据结构方便用来查找
       return new Promise((resolve) => {
-        const len = file.size
-        const offset = 0.1 * 1024 * 1024
         const spark = new sparkMD5.ArrayBuffer()
-        let cur = offset
-        const sparkCalc = (blobs, cur1) => {
-          const reader = new FileReader()
-          reader.readAsArrayBuffer(blobs)
-          reader.onload = (e) => {
-            spark.append(e.target.result)
-            if (cur1 + offset >= len) {
-              resolve(spark.end())
-              this.process3 = 100
-            } else {
-              this.process3 = Number((100 * cur1 / len).toFixed(2))
-            }
-          }
-        }
-        sparkCalc(file.slice(0, offset), cur)
+        const reader = new FileReader()
 
-        while (cur < len) {
-          if (cur + offset >= len) {
-            sparkCalc(file.slice(cur, len), cur)
-            break
+        const size = file.size
+        const offset = 2 * 1024 * 1024
+        // 第一个2M，最后一个区块数据全要
+        const chunks = [file.slice(0, offset)]
+
+        let cur = offset
+        while (cur < size) {
+          if (cur + offset >= size) {
+            // 最后一个区快
+            chunks.push(file.slice(cur, cur + offset))
           } else {
+            // 中间的区块
             const mid = cur + offset / 2
             const end = cur + offset
-            sparkCalc(file.slice(cur, cur + 2), cur)
-            sparkCalc(file.slice(mid, mid + 2), cur)
-            sparkCalc(file.slice(end - 2, end), cur)
+            chunks.push(file.slice(cur, cur + 2))
+            chunks.push(file.slice(mid, mid + 2))
+            chunks.push(file.slice(end - 2, end))
           }
           cur += offset
+        }
+        // 中间的，取前中后各2各字节
+        reader.readAsArrayBuffer(new Blob(chunks))
+        reader.onload = (e) => {
+          spark.append(e.target.result)
+          this.process3 = 100
+          resolve(spark.end())
         }
       })
     },
     async mergeChunks () {
       await this.$http.post('merge', { ext: this.file.name.split('.').pop(), size: CHUNK_SIZE, hash: this.hash }) // 给后缀名和区块的size
     },
-    async uploadChunks (chunks) {
+    async uploadChunks (chunks, uploadedList) {
+      // !已经上传过的chunks不需要上传
       // 映射成promise
-      const requestPromise = chunks.map((chunk, index) => {
+      const chunksFormData = chunks.filter(chunk => !uploadedList.includes(chunk.name)).map((chunk, index) => {
         const form = new FormData()
         form.append('hash', chunk.hash)
         form.append('name', chunk.name)
         form.append('chunk', chunk.chunk)
         form.append('index', chunk.index)
-        return form
-      }).map((form, index) => this.$http.post('/uploadfile', form, {
-        onUploadProgress: (progress) => {
-          this.chunks[index].process = parseInt(((progress.loaded / progress.total) * 100).toFixed(2))
-        }
-      }))
-      // 一次性全部发出 申请tcp会很慢
-      await Promise.all(requestPromise).then((res) => {
+        return { form, index: chunk.index, errorCount: 0 } // errorCount这个区块的报错次数
       })
-      await this.mergeChunks()
+      /* .map(chunkForm => this.$http.post('/uploadfile', chunkForm.form, {
+        onUploadProgress: (progress) => {
+          // 直接取map的Index 永远是从0-len 永远都是前几个chunk在上传 我们应该取得是切块时候得index 那个才是chunk得唯一标识
+          this.chunks[chunkForm.index].process = parseInt(((progress.loaded / progress.total) * 100).toFixed(2))
+        }
+      })) */
+      // 一次性全部发出 有些在pending 这些都会申请tcp 申请tcp会很慢 是同时发起得upload导致卡 而不是多
+      try {
+        await this.sendRequest(chunksFormData)
+        // 所有切片传成功才会merge 才会有最后得文件 没全部时不会走到这得
+        await this.mergeChunks()
+      } catch (e) {
+        this.$message.success('文件重传次数大于3次')
+      }
+    },
+    // 限制并发数量
+    sendRequest (chunksFormData, limit = 4) {
+      // !一个数组，长度是limit，完成一个干掉一个 失败就重传,数组长度一直保持为limit
+      return new Promise((resolve, reject) => {
+        const len = chunksFormData.length
+        let counter = 0// 控制是否全部上传结束
+        let isStop = false // 停止往上upload的标志位
+        const start = async () => {
+          if (isStop) { return }
+          const chunkForm = chunksFormData.shift() // 弹出一个task
+          counter += 1
+          try {
+            await this.$http.post('/uploadfile', chunkForm.form, {
+              onUploadProgress: (progress) => {
+                // 直接取map的Index 永远是从0-len 永远都是前几个chunk在上传 我们应该取得是切块时候得index 那个才是chunk得唯一标识
+                this.chunks[chunkForm.index].process = parseInt(((progress.loaded / progress.total) * 100).toFixed(2))
+              }
+            })
+            // 执行完一个task 下面继续执行下一个task  但是报错啦是不会走start逻辑的 直接走catch
+            if (counter === len) {
+              resolve()
+            } else {
+              start() // 继续启动 递归  counter === len是递归终止条件
+            }
+          } catch (e) {
+            // 当前区块上传报错则变红
+            this.chunks[chunkForm.index].process = -1
+            if (chunkForm.errorCount < 3) {
+              chunkForm.errorCount++
+              chunksFormData.unshift(chunkForm) // 插入这个坏的
+              start() // 再次启动
+            } else {
+              // 错误三次
+              isStop = true
+              reject(e)
+            }
+          }
+        }
+        // 这里用for循环也行 保证有limit个start在发请求
+        while (limit >= 0) {
+          setTimeout(() => {
+            start()
+          }, limit * 1000)
+          limit -= 1
+        }
+      })
     },
     async uploadFile () {
+      if (!this.file) { return }
       if (!this.isImage(this.file)) {
         alert('文件格式不对')
         return
@@ -270,18 +324,28 @@ export default {
       /* /* this.calculateHashIdel(chunks) */
 
       this.hash = await this.calcHashSample(this.file) // 损失一部分精度去换取效率
+      console.log('this.hash', this.hash)
+
+      // 计算完hash 用这个hash去问后台这个文件上传过吗
+      const { data: { uploaded, uploadedList } } = await this.$http.post('/checkFile', { hash: this.hash, ext: this.file.name.split('.').pop() })
       // 这里的初始化才是响应式的 你没在这里写process 后面就不会根据process响应式 这里因为set函数里面会深层递归设置响应式
+      if (uploaded) {
+        // 秒传
+        return this.$message.success('已存在文件,秒传成功')
+      }
+      // 没完全上传文件 或者没上传过文件
       this.chunks = chunks.map((chunk, index) => {
+        const name = this.hash + '-' + index
         return {
           hash: this.hash,
-          name: this.hash + '-' + index,
+          name,
           index,
           chunk: chunk.file,
-          process: 0
+          process: uploadedList.includes(name) ? 100 : 0 // 已经在后台有的切片设为100 没有则为0 不存在chunk的一半上传成功 因为这个chunk的http不成功的话后台不会保存这个chunk文件
         }
       })
-
-      await this.uploadChunks(this.chunks)
+      // 已经上传过的chunks不需要上传
+      await this.uploadChunks(this.chunks, uploadedList)
 
       /*    const form = new FormData()
   form.append('name', 'file')
