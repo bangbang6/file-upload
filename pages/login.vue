@@ -83,7 +83,7 @@ export default {
         this.$alert('登录成功')
         localStorage.setItem('token', res.data.token)
         setTimeout(() => {
-          this.$router.push('/userCenter')
+          this.$router.push('/upload')
         }, 500)
       } else {
         this.$alert('登录失败')

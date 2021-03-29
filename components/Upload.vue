@@ -88,7 +88,7 @@ export default {
   data () {
     return {
       file: null,
-      chunkSize: 0.5 * 0.24 * 1024,
+      chunkSize: 0.5 * 1024 * 1024,
       process: 0,
       process2: 0,
       process3: 0,
@@ -327,9 +327,9 @@ export default {
         }
       })) */
       // 一次性全部发出 有些在pending 这些都会申请tcp 申请tcp会很慢 是同时发起得upload导致卡 而不是多
+      this.CancelToken = axios.CancelToken
+      this.source = this.CancelToken.source()
       try {
-        this.CancelToken = axios.CancelToken
-        this.source = this.CancelToken.source()
         await this.sendRequest(chunksFormData, this.paralleLimit)
         // 所有切片传成功才会merge 才会有最后得文件 没全部时不会走到这得
         await this.mergeChunks()
@@ -350,34 +350,35 @@ export default {
         const start = async () => {
           if (isStop) { return }
           const chunkForm = chunksFormData.shift() // 弹出一个task
-          if (!chunkForm) { return }
-          counter += 1
-          try {
-            await this.$http.post(this.uploadAction, chunkForm.form, {
-              cancelToken: this.source.token,
-              onUploadProgress: (progress) => {
-                // 直接取map的Index 永远是从0-len 永远都是前几个chunk在上传 我们应该取得是切块时候得index 那个才是chunk得唯一标识
+          if (chunkForm) {
+            try {
+              await this.$http.post(this.uploadAction, chunkForm.form, {
+                cancelToken: this.source.token,
+                onUploadProgress: (progress) => {
+                  // 直接取map的Index 永远是从0-len 永远都是前几个chunk在上传 我们应该取得是切块时候得index 那个才是chunk得唯一标识
 
-                this.chunks[chunkForm.index].process = parseInt(((progress.loaded / progress.total) * 100).toFixed(2))
+                  this.chunks[chunkForm.index].process = parseInt(((progress.loaded / progress.total) * 100).toFixed(2))
+                }
+              })
+              // 执行完一个task 下面继续执行下一个task  但是报错啦是不会走start逻辑的 直接走catch
+              if (counter === len - 1) {
+                resolve()
+              } else {
+                counter += 1
+                start() // 继续启动 递归  counter === len是递归终止条件
               }
-            })
-            // 执行完一个task 下面继续执行下一个task  但是报错啦是不会走start逻辑的 直接走catch
-            if (counter === len) {
-              resolve()
-            } else {
-              start() // 继续启动 递归  counter === len是递归终止条件
-            }
-          } catch (e) {
-            // 当前区块上传报错则变红
-            this.chunks[chunkForm.index].process = -1
-            if (chunkForm.errorCount < this.errorLimit) {
-              chunkForm.errorCount++
-              chunksFormData.unshift(chunkForm) // 插入这个坏的
-              start() // 再次启动
-            } else {
-              // 错误三次
-              isStop = true
-              reject(e)
+            } catch (e) {
+              // 当前区块上传报错则变红
+              this.chunks[chunkForm.index].process = -1
+              if (chunkForm.errorCount < this.errorLimit) {
+                chunkForm.errorCount++
+                chunksFormData.unshift(chunkForm) // 插入这个坏的
+                start() // 再次启动
+              } else {
+                // 错误三次
+                isStop = true
+                reject(e)
+              }
             }
           }
         }
@@ -397,7 +398,7 @@ export default {
         alert('文件格式不对')
         return
       }
-      this.chunkSize = Math.floor((this.file.size) / 10)
+
       const chunks = this.createFileChunk(this.file, this.chunkSize)
 
       /* this.calculateHashWorker(chunks) */
@@ -409,7 +410,7 @@ export default {
       } else {
         this.hash = await this.calcHashSample(this.file)
       }
-      console.log('this.hash', this.hash)
+
       // 计算完hash 用这个hash去问后台这个文件上传过吗
       const { data: { uploaded, uploadedList } } = await this.$http.post(this.checkFileAction, { hash: this.hash, ext: this.file.name.split('.').pop() })
       // 这里的初始化才是响应式的 你没在这里写process 后面就不会根据process响应式 这里因为set函数里面会深层递归设置响应式
